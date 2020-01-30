@@ -202,7 +202,7 @@ class DelegatingExitCodeTest(Test):
 
   def __init__(self, argv, code = 0, timeout = None, *args, **kwargs):
     Test.__init__(self, *args, **kwargs)
-    self.tester = tuple([arg % self.path for arg in argv])
+    self.argv = tuple([arg % self.path for arg in argv])
     self.code = code
     self.timeout = timeout # bypass halting problem
 
@@ -216,6 +216,13 @@ class DelegatingExitCodeTest(Test):
 
       return code == self.code
     return False
+
+class FauxDelegatingExitCodeTest(DelegatingExitCodeTest):
+  """don't delegate to a tester, rather delegate to the program itself"""
+
+  def __init__(self, *args, **kwargs):
+    DelegatingExitCodeTest.__init__(self, *args, **kwargs)
+    self.argv[0] = (self.path, ) + self.argv[1:]
 
 if __name__ == "__main__":
   main(sys.argv)
