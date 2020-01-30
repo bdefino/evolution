@@ -164,6 +164,8 @@ class RandomEvolver(Evolver):
 
     this function reduces variability between consecutive values
     by offsetting the output bit count along a logarithmic scale
+
+    this function is especially useful for computing gradual offsets
     """
     random_int_bits = self.random_int_bits
 
