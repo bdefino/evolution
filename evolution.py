@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import math
 import os
 import queue # `collections.deque`
@@ -29,7 +28,44 @@ def get_bits(byte, n = 8):
 
 def main(argv):
   """evolve a program based on an argument vector"""
-  raise NotImplementedError()##################################################################
+  evolver = None
+  i = 1
+  path = None
+  test = None
+  test_argv = ()
+
+  while i < len(argv):
+    if argv[i] in ("-h", "--help"):
+      print(__doc__)
+      return
+    elif argv[i].startswith("-t"):
+      if len(argv[i]) > 2:
+        test_argv = shlex.split(argv[i][len("-t"):])
+      elif len(argv) == i + 1:
+        print(__doc__)
+        sys.exit(1)
+      else:
+        i += 1
+        test_argv = shlex.split(argv[i])
+    elif argv[i].startswith("--test="):
+      if len(argv[i]) > 2:
+        test_argv = shlex.split(argv[i][len("--test="):])
+      elif len(argv) == i + 1:
+        print(__doc__)
+        sys.exit(1)
+      else:
+        i += 1
+        test_argv = shlex.split(argv[i])
+
+    if path is not None:
+      print(__doc__)
+      sys.exit(1)
+    path = argv[i]
+    i += 1
+  evolver = RandomEvolver(path)
+  test = FauxDelegatingExitCodeTest(test_argv, path = path)
+  Driver(path, evolver, test)()
+  print("Done.")
 
 class BitPool:
   """bit pool (queue)"""
@@ -169,7 +205,7 @@ class RandomEvolver(Evolver):
     """
     random_int_bits = self.random_int_bits
 
-    if self.randomize_random_int_bits:
+    if self.randomize_inormal_random_int_bits:
       # randomize the number of bits in a controllable fashion
       # (i.e. as the random offset increases, the actual number of bits
       # should change less)
