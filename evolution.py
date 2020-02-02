@@ -8,6 +8,15 @@ import time
 
 __doc__ = "flip bits until behavior is as expected"
 
+def get_bit_count(n):
+  """return the minimum number of bits required to store `n`"""
+  bit_count = 0
+
+  while n:
+    bit_count += 1
+    n >>= 1
+  return bit_count
+
 def get_bits(byte, n = 8):
   """generate bits from an UNSIGNED byte (big bit first)"""
   assert isinstance(n, int)
@@ -35,6 +44,7 @@ def get_whole(*bits):
 def main(argv):###################################################################insufficient
   """evolve a program based on an argument vector"""
   evolver = None
+  generational_flips = 1
   growth = False
   i = 1
   path = None
@@ -206,11 +216,12 @@ class RandomEvolver(Evolver):
     if not size:
       fp.close()
       return
+    bit_count = get_bit_count(size * 8)
 
     for i in range(self.generational_flips):
       # select a bit randomly
 
-      fulli = self._random_whole() % (size * 8)
+      fulli = self._raw_random_whole(bit_count) % (size * 8)
       bytei = fulli // 8
       biti = fulli % 8
 
@@ -250,8 +261,7 @@ class RandomEvolver(Evolver):
     of bits used in computing a random number using the severe logarithm
     to normalize the bit count (bit count shouldn't vary much)
     """
-    random_whole = lambda: get_whole(*tuple(self._pool.drain(
-      self.random_whole_bit_count)))
+    random_whole = lambda: self._raw_random_whole(self.random_whole_bit_count)
     n = random_whole()
 
     if self.randomize_random_whole_bit_count:
@@ -268,13 +278,22 @@ class RandomEvolver(Evolver):
         self.random_whole_bit_count = 1
     return n
 
+  def _raw_random_whole(self, bit_count):
+    """
+    return a random whole number directly from the entropy pool,
+    no strings attached
+
+    this does NOT draw from, nor randomize the instance's bit count
+    """
+    return get_whole(*tuple(self._pool.drain(bit_count)))
+
   def _severe_log(self, n):
     """
     return a severe version of the natural log
     (`math.log(n, math.e ** math.e)`)
     """
     try:
-      return math.log(n, math.e * math.e)
+      return math.log(n, math.e ** math.e)
     except ValueError:
       # `n` might be too small
 
