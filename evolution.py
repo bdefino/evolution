@@ -32,7 +32,7 @@ def get_whole(*bits):
     n |= bit
   return n
 
-def main(argv):
+def main(argv):###################################################################insufficient
   """evolve a program based on an argument vector"""
   evolver = None
   growth = False
@@ -113,6 +113,8 @@ class Driver:
   def __call__(self):
     """evolve until the executable passes the test (could take a while)"""
     while not self.test():
+      print("Evolving (evolver random whole number bit count: %u)..."
+        % self.evolve.random_whole_bit_count)
       self.evolve()
       time.sleep(self.sleep)
 
@@ -259,7 +261,6 @@ class RandomEvolver(Evolver):
       
       if self.random_whole_bit_count >= 2:
         offset = math.ceil(self._severe_log(offset))
-      print((self.random_whole_bit_count, "+/-", offset))
       offset *= -1 if bool(*tuple(self._pool.drain(1))) else 1
       self.random_whole_bit_count += offset
 
