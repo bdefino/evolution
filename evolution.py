@@ -4,11 +4,27 @@ import os
 import queue # `collections.deque`
 import subprocess
 import sys
+import time
 
 __doc__ = "flip bits until behavior is as expected"
 
-def get_int(*bits):
-  """return an integer composed from the bits (big bit first)"""
+def get_bits(byte, n = 8):
+  """generate bits from an UNSIGNED byte (big bit first)"""
+  assert isinstance(n, int)
+
+  i = 1 << n
+
+  while n:
+    yield (byte & i) >> n
+    i >>= 1
+    n -= 1
+
+def get_byte(n):
+  """get a byte from an integer"""
+  return n.to_bytes(1, "big")
+
+def get_whole(*bits):
+  """return a whole number composed from the bits (big bit first)"""
   n = 0
 
   for bit in bits:
@@ -16,26 +32,20 @@ def get_int(*bits):
     n |= bit
   return n
 
-def get_bits(byte, n = 8):
-  """generate bits from a byte (big bit first)"""
-  assert isinstance(n, int)
-
-  i = 1 << n
-
-  while i >= 0:
-    yield byte & i
-    i >>= 1
-
 def main(argv):
   """evolve a program based on an argument vector"""
   evolver = None
+  growth = False
   i = 1
   path = None
+  sleep = 0
   test = None
   test_argv = ()
 
   while i < len(argv):
-    if argv[i] in ("-h", "--help"):
+    if argv[i] in ("-g", "--growth"):
+      growth = True
+    elif argv[i] in ("-h", "--help"):
       print(__doc__)
       return
     elif argv[i].startswith("-t"):
@@ -56,15 +66,16 @@ def main(argv):
       else:
         i += 1
         test_argv = shlex.split(argv[i])
-
-    if path is not None:
-      print(__doc__)
-      sys.exit(1)
-    path = argv[i]
+    else:
+      path = argv[i]
     i += 1
-  evolver = RandomEvolver(path)
+
+  if path is None:
+    print(__doc__)
+    sys.exit(1)
+  evolver = RandomEvolver(growth = growth, path = path)
   test = FauxDelegatingExitCodeTest(test_argv, path = path)
-  Driver(path, evolver, test)()
+  Driver(path, evolver, sleep, test)()
   print("Done.")
 
 class BitPool:
@@ -75,11 +86,12 @@ class BitPool:
 
   def drain(self, n):
     """generate up to `n` bits from the pool"""
-    while 1:
+    while n:
       try:
-        yield self._pool.get()
-      except ValueError:
+        yield self._pool.get_nowait()
+      except queue.Empty:
         break
+      n -= 1
 
   def fill(self, *bits):
     """add bits into the pool"""
@@ -89,18 +101,20 @@ class BitPool:
 class Driver:
   """evolve until the executable passes the test"""
 
-  def __init__(self, path, evolve = None, test = None):
+  def __init__(self, path, evolve = None, sleep = 0, test = None):
     assert isinstance(evolve, Evolver)
     assert isinstance(test, Test)
 
     self.evolve = evolve if not evolve is None else RandomEvolver()
     self.path = path
+    self.sleep = sleep
     self.test = test if not test is None else ExitCodeTest(path = path)
 
   def __call__(self):
     """evolve until the executable passes the test (could take a while)"""
     while not self.test():
       self.evolve()
+      time.sleep(self.sleep)
 
 class Evolver:
   """evolve an executable"""
@@ -116,18 +130,21 @@ class RandomBitPool(BitPool):
   """generate random bits from an entropy source"""
 
   def __init__(self, read_entropy = os.urandom):
-    self.entropy = read_entropy
+    BitPool.__init__(self)
+    self.read_entropy = read_entropy
 
   def drain(self, n):
     """generate `n` bits from the entropy source"""
     while n:
-      bitl = typle(BitPool.drain(self, n))
+      bitt = tuple(BitPool.drain(self, n))
 
       if not bitt:
         self.fill(*tuple(get_bits(ord(self.read_entropy(1)))))
         continue
-      yield bitt[0]
-      n -= 1
+      
+      for bit in bitt:
+        yield bit
+      n -= len(bitt)
 
 class RandomEvolver(Evolver):
   """
@@ -145,78 +162,122 @@ class RandomEvolver(Evolver):
   so that variability between consecutive random integers
   """
 
-  def __init__(self, base_normal_random_int_bits = 8,
-      mean_generational_flips = 1, negative_growth = True,
-      positive_growth = True, randomize_normal_random_int_bits = True, *args,
-      **kwargs):
-    assert isinstance(base_normal_random_int_bits, int) \
-      and base_normal_random_int_bits >= 1
-    assert isinstance(mean_generational_flips, int) \
-      and mean_generational_flips > 0
+  def __init__(self, generational_flips = 1, growth = True,
+      randomize_random_whole_bit_count = True, random_whole_bit_count = 1,
+      *args, **kwargs):
+    assert isinstance(generational_flips, int) \
+      and generational_flips > 0
+    assert isinstance(random_whole_bit_count, int) \
+      and random_whole_bit_count > 0
 
     Evolver.__init__(self, *args, **kwargs)
-    self.base_normal_random_int_bits = base_normal_random_int_bits
-    self.mean_generational_flips = mean_generational_flips
-    self.negative_growth = negative_growth
+    self.generational_flips = generational_flips
+    self.growth = growth
     self._pool = RandomBitPool()
-    self.positive_growth = positive_growth
-    self._random_int_bits = self.base_random_int_bits
-    self.randomize_normal_random_int_bits = randomize_normal_random_int_bits
+    self.random_whole_bit_count = random_whole_bit_count
+    self.randomize_random_whole_bit_count = randomize_random_whole_bit_count
 
   def __call__(self):
     """randomly evolve (possibly grow/shrink BUT ALWAYS flip bits)"""
-    # flip bits
-
     fp = open(self.path, "r+b" if os.path.exists(self.path) else "w+b")
-    remaining_flips = self.mean_generational_flips
-    
     fp.seek(0, os.SEEK_END)
     size = fp.tell()
     fp.seek(0, os.SEEK_SET)
 
-    while remaining_flips > 0:
-      # flip a random bit (via an offset)
+    if self.growth \
+        and bool(*tuple(self._pool.drain(1))):
+      # compute target size
 
-      offset = self._normal_random_int()
+      target = size + self._normal_random_whole()
+      target = target if target >= 0 else 0
 
-      if self._pool.drain(1):
-        offset *= -1
-      i = fp.tell() + offset
-      
-      ###################################################################################
+      # grow (accounts for positive and negative growth)
 
-      # randomly modify the number of remaining bit flips
+      fp.seek(0, os.SEEK_END)
 
-      offset = self._normal_random_int()
+      while fp.tell() < target:
+        fp.write(get_byte(get_whole(*tuple(self._pool.drain(7)))))
+      fp.truncate(target)
+      os.fdatasync(fp.fileno())
+      size = target
 
-      if self._pool.drain(1):
-        offset *= -1
-      remaining_flips += offset
+    if not size:
+      fp.close()
+      return
+
+    for i in range(self.generational_flips):
+      # select a bit randomly
+
+      fulli = self._random_whole() % (size * 8)
+      bytei = fulli // 8
+      biti = fulli % 8
+
+      # toggle the bit
+
+      fp.seek(bytei, os.SEEK_SET)
+      byten = ord(fp.read(1)) ^ (1 << biti)
+      fp.seek(bytei, os.SEEK_SET)
+      fp.write(get_byte(byten))
+      os.fdatasync(fp.fileno())
     fp.close()
 
-  def _normal_random_int(self):
+  def _normal_random_whole(self):
     """
-    return a normalized random integer based on the configuration
+    return a normalized random whole number based on the configuration
 
     this function reduces variability between consecutive values
-    by offsetting the output bit count along a logarithmic scale
+    by offsetting the output bit count along
+    a severely logarithmic scale (base `math.e ** math.e`);
+    EXCEPT when the random bit count isn't suitable for producing
+    random output (e.g. `self.random_whole_bit_count < 2`):
+    in which case the severe logarithm is omitted
 
     this function is especially useful for computing gradual offsets
     """
-    random_int_bits = self.random_int_bits
+    n = self._random_whole()
 
-    if self.randomize_inormal_random_int_bits:
-      # randomize the number of bits in a controllable fashion
-      # (i.e. as the random offset increases, the actual number of bits
-      # should change less)
+    if self.random_whole_bit_count >= 2:
+      n = math.ceil(self._severe_log(n))
+    return n
 
-      offset = int(math.log(get_int(*tuple(self._pool.drain(
-        random_int_bits)))))
+  def _random_whole(self):
+    """
+    return a NON-normalized whole number based on the configuration
 
-      if self._pool.drain(1):
-        offset *= -1
-      self._random_int_bits += offset
-    return get_int(*tuple(self._pool.drain(random_int_bits)))
+    based on the configuration, this may also modify the number
+    of bits used in computing a random number using the severe logarithm
+    to normalize the bit count (bit count shouldn't vary much)
+    """
+    random_whole = lambda: get_whole(*tuple(self._pool.drain(
+      self.random_whole_bit_count)))
+    n = random_whole()
+
+    if self.randomize_random_whole_bit_count:
+      # modify the number of bits the next call will use
+
+      offset = random_whole()
+      
+      if self.random_whole_bit_count >= 2:
+        offset = math.ceil(self._severe_log(offset))
+      print((self.random_whole_bit_count, "+/-", offset))
+      offset *= -1 if bool(*tuple(self._pool.drain(1))) else 1
+      self.random_whole_bit_count += offset
+
+      if self.random_whole_bit_count <= 0:
+        self.random_whole_bit_count = 1
+    return n
+
+  def _severe_log(self, n):
+    """
+    return a severe version of the natural log
+    (`math.log(n, math.e ** math.e)`)
+    """
+    try:
+      return math.log(n, math.e * math.e)
+    except ValueError:
+      # `n` might be too small
+
+      return 0
 
 class Test:
   """test an executable"""
@@ -244,7 +305,10 @@ class DelegatingExitCodeTest(Test):
 
   def __call__(self):
     """return whether the executable exits properly"""
-    child = subprocess.Popen(self.argv, executable = self.argv[0])
+    try:
+      child = subprocess.Popen(self.argv, executable = self.argv[0])
+    except:
+      return False
     code = child.wait(self.timeout)
 
     if isinstance(code, int):
@@ -258,7 +322,7 @@ class FauxDelegatingExitCodeTest(DelegatingExitCodeTest):
 
   def __init__(self, *args, **kwargs):
     DelegatingExitCodeTest.__init__(self, *args, **kwargs)
-    self.argv[0] = (self.path, ) + self.argv[1:]
+    self.argv = (self.path, ) + self.argv[1:]
 
 if __name__ == "__main__":
   main(sys.argv)
