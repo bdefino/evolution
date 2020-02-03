@@ -2,6 +2,7 @@
 import math
 import os
 import queue # `collections.deque`
+import shlex
 import subprocess
 import sys
 import time
@@ -51,6 +52,7 @@ def main(argv):#################################################################
   sleep = 0
   test = None
   test_argv = ()
+  test_class = FauxDelegatingExitCodeTest
 
   while i < len(argv):
     if argv[i] in ("-g", "--growth"):
@@ -67,6 +69,7 @@ def main(argv):#################################################################
       else:
         i += 1
         test_argv = shlex.split(argv[i])
+      test_class = DelegatingExitCodeTest
     elif argv[i].startswith("--test="):
       if len(argv[i]) > 2:
         test_argv = shlex.split(argv[i][len("--test="):])
@@ -76,6 +79,7 @@ def main(argv):#################################################################
       else:
         i += 1
         test_argv = shlex.split(argv[i])
+      test_class = DelegatingExitCodeTest
     else:
       path = argv[i]
     i += 1
@@ -84,7 +88,7 @@ def main(argv):#################################################################
     print(__doc__)
     sys.exit(1)
   evolver = RandomEvolver(growth = growth, path = path)
-  test = FauxDelegatingExitCodeTest(test_argv, path = path)
+  test = test_class(test_argv, path = path)
   Driver(path, evolver, sleep, test)()
   print("Done.")
 
@@ -197,10 +201,13 @@ class RandomEvolver(Evolver):
     fp.seek(0, os.SEEK_SET)
 
     if self.growth \
-        and bool(*tuple(self._pool.drain(1))):
+        and self._random_bool():
       # compute target size
 
-      target = size + self._normal_random_whole()
+      offset = self._normal_random_whole()
+      offset *= -1 if self._random_bool() else 1
+
+      target = size + offset
       target = target if target >= 0 else 0
 
       # grow (accounts for positive and negative growth)
@@ -208,7 +215,7 @@ class RandomEvolver(Evolver):
       fp.seek(0, os.SEEK_END)
 
       while fp.tell() < target:
-        fp.write(get_byte(get_whole(*tuple(self._pool.drain(7)))))
+        fp.write(get_byte(self._raw_random_whole(8)))
       fp.truncate(target)
       os.fdatasync(fp.fileno())
       size = target
@@ -217,11 +224,14 @@ class RandomEvolver(Evolver):
       fp.close()
       return
     bit_count = get_bit_count(size * 8)
+    last_fulli = 0 # the full index is compounded to better distribute flips
 
     for i in range(self.generational_flips):
       # select a bit randomly
 
-      fulli = self._raw_random_whole(bit_count) % (size * 8)
+      fulli = (last_fulli + self._raw_random_whole(bit_count)) % (size * 8)
+      lasti = fulli
+
       bytei = fulli // 8
       biti = fulli % 8
 
@@ -240,7 +250,7 @@ class RandomEvolver(Evolver):
 
     this function reduces variability between consecutive values
     by offsetting the output bit count along
-    a severely logarithmic scale (base `math.e ** math.e`);
+    a severely logarithmic scale (base `math.e ** 8`);
     EXCEPT when the random bit count isn't suitable for producing
     random output (e.g. `self.random_whole_bit_count < 2`):
     in which case the severe logarithm is omitted
@@ -249,9 +259,13 @@ class RandomEvolver(Evolver):
     """
     n = self._random_whole()
 
-    if self.random_whole_bit_count >= 2:
+    if self.random_whole_bit_count >= 3:
       n = math.ceil(self._severe_log(n))
     return n
+
+  def _random_bool(self):
+    """return a random boolean value"""
+    return bool(*tuple(self._pool.drain(1)))
 
   def _random_whole(self):
     """
@@ -269,9 +283,9 @@ class RandomEvolver(Evolver):
 
       offset = random_whole()
       
-      if self.random_whole_bit_count >= 2:
+      if self.random_whole_bit_count >= 3:
         offset = math.ceil(self._severe_log(offset))
-      offset *= -1 if bool(*tuple(self._pool.drain(1))) else 1
+      offset *= -1 if self._random_bool() else 1
       self.random_whole_bit_count += offset
 
       if self.random_whole_bit_count <= 0:
@@ -289,11 +303,11 @@ class RandomEvolver(Evolver):
 
   def _severe_log(self, n):
     """
-    return a severe version of the natural log
-    (`math.log(n, math.e ** math.e)`)
+    return a severe version (relative to bits per byte) of the natural log
+    (`math.log(n, math.e ** 8)`)
     """
     try:
-      return math.log(n, math.e ** math.e)
+      return math.log(n, math.e ** 8)
     except ValueError:
       # `n` might be too small
 
@@ -319,7 +333,8 @@ class DelegatingExitCodeTest(Test):
 
   def __init__(self, argv, code = 0, timeout = None, *args, **kwargs):
     Test.__init__(self, *args, **kwargs)
-    self.argv = tuple([arg % self.path for arg in argv])
+    self.argv = tuple(((arg % self.path if "%s" in arg else arg)
+      for arg in argv))
     self.code = code
     self.timeout = timeout # bypass halting problem
 
